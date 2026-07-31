@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>遠端雙人連線 - 籃球 1200 核心單字 PK 賽</title>
+  <!-- PeerJS 連線庫 -->
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <style>
+    :root { --primary: #e67e22; --secondary: #2c3e50; --bg: #f4f7f6; }
+    body { font-family: 'PingFang TC', sans-serif; background-color: var(--bg); margin: 0; padding: 15px; display: flex; flex-direction: column; align-items: center; }
+    .container { max-width: 900px; width: 100%; background: white; padding: 20px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); box-sizing: border-box; }
+    h1 { text-align: center; color: var(--secondary); margin-bottom: 5px; font-size: 24px; }
+    p.sub-title { text-align: center; color: #7f8c8d; margin-top: 0; font-size: 13px; }
+    .hidden { display: none !important; }
+    
+    .lobby-box { background: #f8f9fa; border: 2px dashed #bdc3c7; border-radius: 10px; padding: 20px; text-align: center; margin-bottom: 20px; }
+    .input-group { margin: 10px 0; display: flex; gap: 10px; justify-content: center; }
+    input[type="text"] { padding: 10px; font-size: 16px; border: 2px solid #ddd; border-radius: 6px; outline: none; }
+    button { padding: 10px 20px; font-size: 16px; font-weight: bold; background-color: var(--primary); color: white; border: none; border-radius: 6px; cursor: pointer; }
+    button:disabled { background-color: #bdc3c7; cursor: not-allowed; }
+    button.btn-secondary { background-color: #3498db; }
+
+    .game-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 15px; }
+    @media (max-width: 768px) { .game-grid { grid-template-columns: 1fr; } }
+
+    .camera-container { position: relative; background: #000; border-radius: 10px; overflow: hidden; aspect-ratio: 4/3; }
+    video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; }
+    #debug-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+    
+    .sensor-zone { position: absolute; border: 2px dashed #2ecc71; background: rgba(46, 204, 113, 0.2); color: white; top: 30%; left: 35%; width: 90px; height: 90px; border-radius: 6px; pointer-events: auto; cursor: move; z-index: 10; font-size: 11px; font-weight: bold; display: flex; align-items: center; justify-content: center; text-shadow: 0 0 3px #000; }
+    .sensor-zone.active { background: rgba(46, 204, 113, 0.8) !important; color: white !important; }
+
+    .card { background: #f9f9f9; padding: 15px; border-radius: 10px; border: 2px solid #e2e8f0; }
+    .card.my-card { border-color: #3498db; }
+    .card.opponent-card { border-color: #e74c3c; }
+
+    .score-badge { font-size: 24px; font-weight: bold; color: var(--primary); }
+    .hint-badge { background: var(--secondary); color: white; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+    .hint-text { font-size: 18px; font-weight: bold; color: #333; margin: 5px 0; }
+    .word-pattern { font-size: 20px; letter-spacing: 3px; color: #e67e22; font-family: monospace; font-weight: bold; }
+
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 10px; text-align: center; }
+    th { background-color: var(--secondary); color: white; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h1>🌐 遠端雙人連線 - 籃球 1200 核心單字 PK 賽</h1>
+  <p class="sub-title">獨立鏡頭感應！已排除純詞性變化字尾，精選高頻核心單字。</p>
+
+  <!-- 大廳區 -->
+  <div id="lobby-screen" class="lobby-box">
+    <h3>步驟 1: 輸入暱稱</h3>
+    <input type="text" id="my-name" placeholder="您的名字" value="Player1" style="margin-bottom: 15px;">
+
+    <div style="display: flex; gap: 20px; justify-content: center; flex-wrap: wrap;">
+      <div style="flex: 1; min-width: 200px; border-right: 1px solid #ccc; padding-right: 10px;">
+        <h4>選項 A：開新房間 (Host)</h4>
+        <button id="create-room-btn" disabled>建立房間</button>
+        <p id="room-id-display" style="font-weight: bold; color: #e67e22; font-size: 18px;"></p>
+      </div>
+
+      <div style="flex: 1; min-width: 200px;">
+        <h4>選項 B：加入對方的房間</h4>
+        <div class="input-group">
+          <input type="text" id="join-room-id" placeholder="輸入房間 ID">
+          <button id="join-room-btn" class="btn-secondary" disabled>加入</button>
+        </div>
+      </div>
+    </div>
+    <p id="conn-status" style="color: #7f8c8d; margin-top: 15px; font-weight: bold;">⏳ 正在自動準備 1,200 核心字庫...</p>
+  </div>
+
+  <!-- 遊戲區 -->
+  <div id="game-screen" class="hidden">
+    <div style="display: flex; justify-content: space-between; align-items: center; background: #2c3e50; color: white; padding: 10px 20px; border-radius: 8px; margin-bottom: 15px;">
+      <div>你 (<span id="me-label">--</span>): <span class="score-badge" id="my-score" style="color:#3498db;">0</span> 分</div>
+      <div style="font-size: 14px; color: #f1c40f;" id="game-timer">比賽進行中 (共20題)</div>
+      <div>對手 (<span id="op-label">--</span>): <span class="score-badge" id="op-score" style="color:#e74c3c;">0</span> 分</div>
+    </div>
+
+    <div class="game-grid">
+      <div>
+        <div class="camera-container" id="cam-container">
+          <video id="webcam" autoplay playsinline muted></video>
+          <canvas id="debug-canvas"></canvas>
+          <div id="sensor-zone" class="sensor-zone">移動至籃網位置</div>
+        </div>
+        <p style="font-size: 12px; color: #7f8c8d; text-align: center;">拖曳綠框至鏡頭中的籃網區域</p>
+      </div>
+
+      <div class="card my-card">
+        <h3>✏️ 你的題目</h3>
+        <span class="hint-badge" id="my-pos">--</span>
+        <div class="hint-text" id="my-meaning">等待投進解鎖...</div>
+        <div class="word-pattern" id="my-pattern">--</div>
+        
+        <div style="margin-top: 15px;">
+          <p id="my-status" style="font-size: 13px; color: #e67e22; font-weight: bold;">🏀 請投進一球解鎖答題框...</p>
+          <input type="text" id="my-input" placeholder="投進後在此輸入..." disabled autocomplete="off" style="width: 100%; box-sizing: border-box;">
+          <button id="my-submit" style="width: 100%; margin-top: 8px;" disabled>送出答案</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card opponent-card" style="margin-top: 15px;">
+      <h4>👀 對手動態 (<span id="op-name-text">對手</span>)</h4>
+      <p id="op-status-text" style="font-size: 14px; color: #555;">正在準備投籃...</p>
+    </div>
+  </div>
+
+  <!-- 結算區 -->
+  <div id="result-screen" class="hidden">
+    <h2 id="winner-title" style="text-align: center; color: var(--primary);">🏆 比賽結束</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>玩家</th>
+          <th>命中投籃</th>
+          <th>答對題數</th>
+          <th>總得分</th>
+        </tr>
+      </thead>
+      <tbody id="result-body"></tbody>
+    </table>
+    <button onclick="location.reload()" style="margin-top: 20px; width: 100%;">再玩一次</button>
+  </div>
+</div>
+
+<script>
+  let vocabularyBank = [];
+  let peer = null;
+  let conn = null;
+  let isHost = false;
+  let myName = "Player";
+  let opName = "對手";
+
+  let myStats = { shotMade: 0, quizCorrect: 0, score: 0, hasScored: false, currentWord: null };
+  let opStats = { shotMade: 0, quizCorrect: 0, score: 0 };
+  let wordQueue = [];
+
+  // 自動載入遠端 1200 核心單字庫，失敗時直接顯示錯誤
+  async function loadVocabulary() {
+    const statusEle = document.getElementById('conn-status');
+    try {
+      const response = await fetch('https://raw.githubusercontent.com/mde-tw/3D-Web-Design/main/words_1200.json');
+      if (!response.ok) throw new Error("無法連線至遠端單字庫（HTTP 錯誤）");
+      
+      let rawWords = await response.json();
+      
+      // 過濾邏輯：排除純粹加 -ly, -ness, -ment, -ful 且字根重複的單字
+      const baseWords = new Set(rawWords.map(w => w.word.toLowerCase()));
+      vocabularyBank = rawWords.filter(item => {
+        const w = item.word.toLowerCase();
+        if (w.endsWith('ly') && baseWords.has(w.slice(0, -2))) return false;
+        if (w.endsWith('ness') && baseWords.has(w.slice(0, -4))) return false;
+        if (w.endsWith('ment') && baseWords.has(w.slice(0, -4))) return false;
+        if (w.endsWith('ful') && baseWords.has(w.slice(0, -3))) return false;
+        return true;
+      });
+
+      if (vocabularyBank.length === 0) throw new Error("單字庫內容為空");
+
+      statusEle.style.color = "#27ae60";
+      statusEle.innerText = `✅ 1,200 核心字庫載入成功！請選擇建立或加入房間。`;
+      document.getElementById('create-room-btn').disabled = false;
+      document.getElementById('join-room-btn').disabled = false;
+    } catch (e) {
+      statusEle.style.color = "#e74c3c";
+      statusEle.innerText = `❌ 單字庫載入失敗：${e.message}。請檢查網路或重新整理。`;
+      document.getElementById('create-room-btn').disabled = true;
+      document.getElementById('join-room-btn').disabled = true;
+    }
+  }
+
+  window.addEventListener('DOMContentLoaded', loadVocabulary);
+
+  document.getElementById('create-room-btn').addEventListener('click', createRoom);
+  document.getElementById('join-room-btn').addEventListener('click', joinRoom);
+  document.getElementById('my-submit').addEventListener('click', checkAnswer);
+  document.getElementById('my-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') checkAnswer(); });
+
+  makeDraggable(document.getElementById('sensor-zone'), document.getElementById('cam-container'));
+
+  function initPeer() {
+    myName = document.getElementById('my-name').value.trim() || "匿名玩家";
+    peer = new Peer();
+    peer.on('error', (err) => alert("連線錯誤: " + err.type));
+  }
+
+  function createRoom() {
+    initPeer();
+    isHost = true;
+    document.getElementById('conn-status').innerText = "正在建立房間...";
+    
+    peer.on('open', (id) => {
+      document.getElementById('room-id-display').innerText = `房間 ID: ${id}`;
+      document.getElementById('conn-status').innerText = "等待對手加入...";
+    });
+
+    peer.on('connection', (c) => {
+      conn = c;
+      setupConnection();
+    });
+  }
+
+  function joinRoom() {
+    const targetId = document.getElementById('join-room-id').value.trim();
+    if (!targetId) return alert("請輸入房間 ID！");
+
+    initPeer();
+    document.getElementById('conn-status').innerText = "連線中...";
+
+    peer.on('open', () => {
+      conn = peer.connect(targetId);
+      setupConnection();
+    });
+  }
+
+  function setupConnection() {
+    conn.on('open', () => {
+      document.getElementById('conn-status').innerText = "連線成功！連線啟動中...";
+      conn.send({ type: 'INIT', name: myName });
+
+      if (isHost) {
+        const shuffled = [...vocabularyBank].sort(() => Math.random() - 0.5);
+        wordQueue = shuffled.slice(0, 20); 
+        
+        conn.send({ type: 'START_GAME', words: wordQueue });
+        startGame(wordQueue);
+      }
+    });
+
+    conn.on('data', (data) => {
+      if (data.type === 'INIT') {
+        opName = data.name;
+        document.getElementById('op-label').innerText = opName;
+        document.getElementById('op-name-text').innerText = opName;
+      }
+      if (data.type === 'START_GAME') startGame(data.words);
+      if (data.type === 'UPDATE_STATS') {
+        opStats = data.stats;
+        document.getElementById('op-score').innerText = opStats.score;
+        document.getElementById('op-status-text').innerText = data.lastAction;
+      }
+    });
+  }
+
+  function startGame(words) {
+    wordQueue = words;
+    document.getElementById('lobby-screen').classList.add('hidden');
+    document.getElementById('game-screen').classList.remove('hidden');
+
+    document.getElementById('me-label').innerText = myName;
+    document.getElementById('op-label').innerText = opName;
+    document.getElementById('op-name-text').innerText = opName;
+
+    nextQuestion();
+    startCameraAndAI();
+  }
+
+  function nextQuestion() {
+    if (wordQueue.length === 0) {
+      alert("本局 20 題已全部挑戰完畢！");
+      endGame();
+      return;
+    }
+
+    myStats.currentWord = wordQueue.pop();
+    myStats.hasScored = false;
+
+    const word = myStats.currentWord.word;
+    let pattern = word[0];
+    for (let i = 1; i < word.length - 1; i++) pattern += " _";
+    pattern += ` ${word[word.length - 1]}`;
+
+    document.getElementById('my-pos').innerText = myStats.currentWord.pos || "n.";
+    document.getElementById('my-meaning').innerText = myStats.currentWord.meaning;
+    document.getElementById('my-pattern').innerText = `${pattern} (${word.length}字)`;
+
+    document.getElementById('my-input').value = "";
+    document.getElementById('my-input').disabled = true;
+    document.getElementById('my-submit').disabled = true;
+    document.getElementById('my-status').style.color = "#e67e22";
+    document.getElementById('my-status').innerText = "🏀 請投進一球解鎖答題框...";
+  }
+
+  function checkAnswer() {
+    if (!myStats.hasScored) return;
+
+    const userAns = document.getElementById('my-input').value.trim();
+    if (userAns.toLowerCase() === myStats.currentWord.word.toLowerCase()) {
+      myStats.quizCorrect++;
+      myStats.score += 2;
+      document.getElementById('my-score').innerText = myStats.score;
+
+      syncToOpponent(`✅ 答對單字：${myStats.currentWord.word} (+2分)`);
+      alert("✅ 答對了！");
+      nextQuestion();
+    } else {
+      alert("❌ 答錯囉，請檢查拼字！");
+      document.getElementById('my-input').value = "";
+      document.getElementById('my-input').focus();
+    }
+  }
+
+  function syncToOpponent(actionText) {
+    if (conn && conn.open) {
+      conn.send({ type: 'UPDATE_STATS', stats: myStats, lastAction: actionText });
+    }
+  }
+
+  let prevGray = null;
+
+  function startCameraAndAI() {
+    const video = document.getElementById('webcam');
+    const canvas = document.getElementById('debug-canvas');
+    const ctx = canvas.getContext('2d');
+
+    navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } })
+      .then((stream) => {
+        video.srcObject = stream;
+        video.onloadedmetadata = () => {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          requestAnimationFrame(processFrame);
+        };
+      });
+
+    function processFrame() {
+      if (video.paused || video.ended) return;
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const currGray = convertToGrayscale(ctx.getImageData(0, 0, canvas.width, canvas.height));
+
+      if (prevGray && !myStats.hasScored) {
+        checkZoneMotion(currGray, prevGray, canvas.width, canvas.height);
+      }
+
+      prevGray = currGray;
+      requestAnimationFrame(processFrame);
+    }
+  }
+
+  function checkZoneMotion(currGray, prevGray, w, h) {
+    const zoneEle = document.getElementById('sensor-zone');
+    const containerRect = document.getElementById('cam-container').getBoundingClientRect();
+    const rect = getPixelRect(zoneEle, containerRect, w, h);
+
+    let diffCount = 0;
+    const threshold = 25;
+    for (let y = rect.y; y < rect.y + rect.h; y += 2) {
+      for (let x = rect.x; x < rect.x + rect.w; x += 2) {
+        const idx = y * w + x;
+        if (Math.abs(currGray[idx] - prevGray[idx]) > threshold) diffCount++;
+      }
+    }
+
+    const intensity = diffCount / ((rect.w * rect.h) / 4);
+
+    if (intensity > 0.22) {
+      myStats.shotMade++;
+      myStats.score += 1;
+      myStats.hasScored = true;
+
+      document.getElementById('my-score').innerText = myStats.score;
+      zoneEle.classList.add('active');
+      setTimeout(() => zoneEle.classList.remove('active'), 1000);
+
+      document.getElementById('my-status').style.color = "#27ae60";
+      document.getElementById('my-status').innerText = "🎯 投進了！請解鎖輸入框答題！";
+      document.getElementById('my-input').disabled = false;
+      document.getElementById('my-submit').disabled = false;
+      document.getElementById('my-input').focus();
+
+      syncToOpponent(`🏀 投進一球！(+1分)`);
+    }
+  }
+
+  function convertToGrayscale(imageData) {
+    const data = imageData.data;
+    const gray = new Uint8ClampedArray(data.length / 4);
+    for (let i = 0; i < data.length; i += 4) {
+      gray[i / 4] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+    return gray;
+  }
+
+  function getPixelRect(domEle, containerRect, vWidth, vHeight) {
+    const r = domEle.getBoundingClientRect();
+    return {
+      x: Math.floor(((r.left - containerRect.left) / containerRect.width) * vWidth),
+      y: Math.floor(((r.top - containerRect.top) / containerRect.height) * vHeight),
+      w: Math.floor((r.width / containerRect.width) * vWidth),
+      h: Math.floor((r.height / containerRect.height) * vHeight)
+    };
+  }
+
+  function makeDraggable(element, container) {
+    let isDragging = false, offsetX, offsetY;
+    element.addEventListener('mousedown', (e) => { isDragging = true; offsetX = e.clientX - element.offsetLeft; offsetY = e.clientY - element.offsetTop; });
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const cRect = container.getBoundingClientRect();
+      let left = e.clientX - cRect.left - (element.offsetWidth / 2);
+      let top = e.clientY - cRect.top - (element.offsetHeight / 2);
+      element.style.left = Math.max(0, Math.min(left, cRect.width - element.offsetWidth)) + 'px';
+      element.style.top = Math.max(0, Math.min(top, cRect.height - element.offsetHeight)) + 'px';
+    });
+    document.addEventListener('mouseup', () => { isDragging = false; });
+  }
+
+  function endGame() {
+    document.getElementById('game-screen').classList.add('hidden');
+    document.getElementById('result-screen').classList.remove('hidden');
+
+    let winnerText = "🤝 平手！";
+    if (myStats.score > opStats.score) winnerText = `🏆 恭喜 ${myName} 獲得勝利！`;
+    else if (opStats.score > myStats.score) winnerText = `🏆 恭喜 ${opName} 獲得勝利！`;
+
+    document.getElementById('winner-title').innerText = winnerText;
+
+    const tbody = document.getElementById('result-body');
+    tbody.innerHTML = `
+      <tr>
+        <td><strong>${myName} (你)</strong></td>
+        <td>${myStats.shotMade} 次</td>
+        <td>${myStats.quizCorrect} 題</td>
+        <td><strong>${myStats.score} 分</strong></td>
+      </tr>
+      <tr>
+        <td><strong>${opName}</strong></td>
+        <td>${opStats.shotMade} 次</td>
+        <td>${opStats.quizCorrect} 題</td>
+        <td><strong>${opStats.score} 分</strong></td>
+      </tr>
+    `;
+  }
+</script>
+
+</body>
+</html>
